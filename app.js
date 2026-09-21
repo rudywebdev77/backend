@@ -73,9 +73,11 @@ app.use(limiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// API Routes
+// API Routes (Mounted on both /api and / for seamless handling in Vercel Serverless & Express standalone)
 app.use('/api', healthRoutes);
 app.use('/api', pdfRoutes);
+app.use('/', healthRoutes);
+app.use('/', pdfRoutes);
 
 // 404 Route handler
 app.use((req, res) => {
