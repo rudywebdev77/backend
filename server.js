@@ -20,8 +20,12 @@ app.use(helmet());
 // CORS configuration
 const corsOptions = {
   origin: (origin, callback) => {
-    // Allow non-browser agents (cURL, Postman, etc.) or matching client URL
-    if (!origin || origin === CLIENT_URL || process.env.NODE_ENV !== 'production') {
+    // Allow non-browser agents, matching CLIENT_URL, or any request in non-production mode / local network IP
+    if (!origin || process.env.NODE_ENV !== 'production' || origin === CLIENT_URL) {
+      return callback(null, true);
+    }
+    // Check if origin matches LAN IP format (http://192.168.x.x:5173, etc.)
+    if (/^https?:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
       return callback(null, true);
     }
     callback(new Error(`CORS blocked request from origin: ${origin}`));
@@ -67,7 +71,7 @@ app.use((req, res) => {
 // Centralized error handler
 app.use(errorHandler);
 
-// Start Server
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Start Server on 0.0.0.0 for LAN & Mobile accessibility
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT} (Bound to 0.0.0.0 for LAN/mobile access)`);
 });
