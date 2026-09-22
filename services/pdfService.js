@@ -38,12 +38,12 @@ export const extractTextFromPdf = async (filePath) => {
       .replace(/--\s*\d+\s*of\s*\d+\s*--/gi, '')
       .trim();
 
-    // Check if the PDF has actual alphanumeric content
+    // Check if the PDF has actual readable alphanumeric content
     const alphanumericCharCount = cleanedText.replace(/[^a-zA-Z0-9]/g, '').length;
 
-    if (!cleanedText || alphanumericCharCount === 0) {
+    if (!cleanedText || alphanumericCharCount < 15) {
       const error = new Error(
-        'This PDF appears to be scanned/image-based. OCR support will be required to convert it.'
+        'This PDF appears to be scanned/image-based with little or no extractable text.'
       );
       error.isScannedPdf = true;
       error.status = 400;
