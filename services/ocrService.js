@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { createCanvas } from '@napi-rs/canvas';
+import { PNG } from 'pngjs';
 import { createWorker } from 'tesseract.js';
 
 // Default maximum pages allowed for OCR processing per PDF
@@ -76,28 +76,25 @@ export const extractTextWithOcr = async (filePath, options = {}) => {
             });
 
             if (imgObj && imgObj.width > 10 && imgObj.height > 10 && imgObj.data) {
-              const canvas = createCanvas(imgObj.width, imgObj.height);
-              const ctx = canvas.getContext('2d');
-              const imgDataObj = ctx.createImageData(imgObj.width, imgObj.height);
+              const png = new PNG({ width: imgObj.width, height: imgObj.height });
               const data = imgObj.data;
 
               if (data.length === imgObj.width * imgObj.height * 3) {
                 let srcIdx = 0;
                 let dstIdx = 0;
                 for (let p = 0; p < imgObj.width * imgObj.height; p++) {
-                  imgDataObj.data[dstIdx] = data[srcIdx];
-                  imgDataObj.data[dstIdx + 1] = data[srcIdx + 1];
-                  imgDataObj.data[dstIdx + 2] = data[srcIdx + 2];
-                  imgDataObj.data[dstIdx + 3] = 255;
+                  png.data[dstIdx] = data[srcIdx];
+                  png.data[dstIdx + 1] = data[srcIdx + 1];
+                  png.data[dstIdx + 2] = data[srcIdx + 2];
+                  png.data[dstIdx + 3] = 255;
                   srcIdx += 3;
                   dstIdx += 4;
                 }
               } else if (data.length === imgObj.width * imgObj.height * 4) {
-                imgDataObj.data.set(data);
+                png.data.set(data);
               }
 
-              ctx.putImageData(imgDataObj, 0, 0);
-              const imageBuffer = canvas.toBuffer('image/png');
+              const imageBuffer = PNG.sync.write(png);
 
               const recognitionResult = await worker.recognize(imageBuffer);
               const text = recognitionResult?.data?.text ? recognitionResult.data.text.trim() : '';
