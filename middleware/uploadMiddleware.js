@@ -1,12 +1,11 @@
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
 import os from 'os';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Use system temporary directory (works seamlessly on Vercel, Render, Windows, Linux)
+// Use system  directory 
 const uploadDir = os.tmpdir();
 
 const maxFileSize = parseInt(process.env.MAX_FILE_SIZE || '10485760', 10); // Default 10MB

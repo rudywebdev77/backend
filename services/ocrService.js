@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { pathToFileURL } from 'url';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { PNG } from 'pngjs';
 import { createWorker } from 'tesseract.js';
@@ -10,12 +9,10 @@ const DEFAULT_MAX_OCR_PAGES = 20;
 
 /**
  * Perform Optical Character Recognition (OCR) on a scanned/image-based PDF.
- * Extracts embedded raster images page-by-page and runs Tesseract OCR.
- *
- * @param {string} filePath - Path to the uploaded PDF file.
- * @param {Object} [options={}] - OCR configuration options.
- * @param {number} [options.maxPages] - Maximum allowed pages for OCR.
- * @returns {Promise<{ text: string, pageCount: number, processedPages: number }>}
+ @param {string} filePath - Path to the uploaded PDF file.
+  @param {Object} [options={}] - OCR configuration options.
+  @param {number} [options.maxPages] - Maximum allowed pages for OCR.
+  @returns {Promise<{ text: string, pageCount: number, processedPages: number }>}
  */
 export const extractTextWithOcr = async (filePath, options = {}) => {
   const maxPages = options.maxPages || parseInt(process.env.MAX_OCR_PAGES, 10) || DEFAULT_MAX_OCR_PAGES;
