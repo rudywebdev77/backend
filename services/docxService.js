@@ -328,19 +328,41 @@ function mergeLineItems(lineItems) {
 /**
  * Converts line clusters into Word Paragraphs.
  */
-function buildParagraphsFromLineClusters(clusters, alignment = AlignmentType.LEFT) {
+/**
+ * Converts line clusters into Word Paragraphs with smart horizontal alignment and spacing.
+ */
+function buildParagraphsFromLineClusters(clusters, forcedAlignment = null, viewportWidth = 612) {
   const paragraphs = [];
 
   for (const cluster of clusters) {
     const lineRuns = mergeLineItems(cluster.items);
     if (lineRuns.length === 0) continue;
 
+    const minX = Math.min(...cluster.items.map((it) => it.xPt));
+    const maxX = Math.max(...cluster.items.map((it) => it.xPt + (it.widthPt || 0)));
+    const lineWidth = maxX - minX;
+    const lineMidX = (minX + maxX) / 2;
+    const pageMidX = viewportWidth / 2;
+
+    let alignment = forcedAlignment || AlignmentType.LEFT;
+    if (!forcedAlignment) {
+      if (Math.abs(lineMidX - pageMidX) < 45 && lineWidth < viewportWidth * 0.75) {
+        alignment = AlignmentType.CENTER;
+      }
+    }
+
     const docxRuns = [];
 
     for (let i = 0; i < lineRuns.length; i++) {
       const run = lineRuns[i];
       if (i > 0) {
-        docxRuns.push(new TextRun({ text: ' ' }));
+        const prevRun = lineRuns[i - 1];
+        const gap = run.xPt - (prevRun.xPt + prevRun.widthPt);
+        if (gap > 35) {
+          docxRuns.push(new TextRun({ text: '\t\t\t\t' }));
+        } else {
+          docxRuns.push(new TextRun({ text: ' ' }));
+        }
       }
 
       const halfPoints = Math.min(96, Math.max(16, run.fontSizePt * 2));
@@ -359,7 +381,7 @@ function buildParagraphsFromLineClusters(clusters, alignment = AlignmentType.LEF
 
     if (docxRuns.length > 0) {
       const firstRun = lineRuns[0];
-      const isTitle = firstRun.fontSizePt >= 20;
+      const isTitle = firstRun.fontSizePt >= 18;
 
       paragraphs.push(
         new Paragraph({
@@ -482,11 +504,288 @@ export const createDocxExactReplica = async (pdfPath) => {
 };
 
 /**
+ * Renders page content into Word sections with automatic column and section detection.
+ */
+function renderPageContentToDocx(lineClusters, pageImages, viewport) {
+  const docxChildren = [];
+  const pageMidX = viewport.width / 2;
+
+  if (lineClusters.length === 0 && pageImages.length === 0) {
+    return [
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: ' ',
+            font: 'Calibri',
+            size: 24,
+          }),
+        ],
+      }),
+    ];
+  }
+
+  // 1. Separate Full-Width Header Clusters from Body Clusters
+  const headerClusters = [];
+  const bodyClusters = [];
+
+  let isInsideBody = false;
+
+  for (const cluster of lineClusters) {
+    const minX = Math.min(...cluster.items.map((it) => it.xPt));
+    const maxX = Math.max(...cluster.items.map((it) => it.xPt + (it.widthPt || 0)));
+    const lineMidX = (minX + maxX) / 2;
+    const lineWidth = maxX - minX;
+
+    const firstStr = (cluster.items[0]?.str || '').trim().toLowerCase();
+    const isBodyStartKeyword =
+      firstStr.startsWith('abstract') ||
+      firstStr.startsWith('1 ') ||
+      firstStr.startsWith('1.') ||
+      firstStr.startsWith('introduction');
+
+    const isCenteredTitle = Math.abs(lineMidX - pageMidX) < 50 && lineWidth < viewport.width * 0.8;
+    const isLargeTitleFont = cluster.items.some((it) => it.fontSizePt >= 16);
+
+    if (isBodyStartKeyword) {
+      isInsideBody = true;
+    }
+
+    if (!isInsideBody && (isCenteredTitle || isLargeTitleFont || cluster.avgY < 120)) {
+      headerClusters.push(cluster);
+    } else {
+      isInsideBody = true;
+      bodyClusters.push(cluster);
+    }
+  }
+
+  // Render Header Section (Centered Titles & Side-by-side Authors)
+  if (headerClusters.length > 0) {
+    for (const cluster of headerClusters) {
+      const minX = Math.min(...cluster.items.map((it) => it.xPt));
+      const maxX = Math.max(...cluster.items.map((it) => it.xPt + (it.widthPt || 0)));
+      const lineMidX = (minX + maxX) / 2;
+      const lineWidth = maxX - minX;
+
+      const isCentered = Math.abs(lineMidX - pageMidX) < 50 && lineWidth < viewport.width * 0.8;
+
+      if (isCentered) {
+        docxChildren.push(...buildParagraphsFromLineClusters([cluster], AlignmentType.CENTER, viewport.width));
+      } else {
+        docxChildren.push(...buildParagraphsFromLineClusters([cluster], null, viewport.width));
+      }
+    }
+  }
+
+  // 2. Classify Images into Banner Images (Full Width) vs Column Images
+  const bannerImages = [];
+  const columnImages = [];
+
+  for (const img of pageImages) {
+    if (img.widthPt >= viewport.width * 0.45) {
+      bannerImages.push(img);
+    } else {
+      columnImages.push(img);
+    }
+  }
+
+  // 3. Process Body Section
+  let leftBodyCount = 0;
+  let rightBodyCount = 0;
+
+  for (const cluster of bodyClusters) {
+    const minX = Math.min(...cluster.items.map((it) => it.xPt));
+    const maxX = Math.max(...cluster.items.map((it) => it.xPt + (it.widthPt || 0)));
+
+    if (maxX <= pageMidX + 30) {
+      leftBodyCount++;
+    } else if (minX >= pageMidX - 30) {
+      rightBodyCount++;
+    }
+  }
+
+  for (const img of columnImages) {
+    if (img.xPt >= pageMidX - 30) {
+      rightBodyCount++;
+    } else {
+      leftBodyCount++;
+    }
+  }
+
+  const isTrueDualColumn = leftBodyCount >= 2 && rightBodyCount >= 1;
+
+  if (isTrueDualColumn) {
+    const leftColClusters = [];
+    const rightColClusters = [];
+    const leftColImages = [];
+    const rightColImages = [];
+
+    for (const cluster of bodyClusters) {
+      const minX = Math.min(...cluster.items.map((it) => it.xPt));
+      const maxX = Math.max(...cluster.items.map((it) => it.xPt + (it.widthPt || 0)));
+
+      if (minX < pageMidX - 20 && maxX > pageMidX + 20) {
+        const leftItems = cluster.items.filter((it) => it.xPt < pageMidX);
+        const rightItems = cluster.items.filter((it) => it.xPt >= pageMidX);
+        if (leftItems.length > 0) leftColClusters.push({ avgY: cluster.avgY, items: leftItems });
+        if (rightItems.length > 0) rightColClusters.push({ avgY: cluster.avgY, items: rightItems });
+      } else if (maxX <= pageMidX + 30) {
+        leftColClusters.push(cluster);
+      } else {
+        rightColClusters.push(cluster);
+      }
+    }
+
+    for (const img of columnImages) {
+      if (img.xPt >= pageMidX - 30) {
+        rightColImages.push(img);
+      } else {
+        leftColImages.push(img);
+      }
+    }
+
+    const leftElements = [
+      ...leftColClusters.map((c) => ({ type: 'cluster', yPt: c.avgY, cluster: c })),
+      ...leftColImages.map((i) => ({ type: 'image', yPt: i.yPt, image: i })),
+    ].sort((a, b) => a.yPt - b.yPt);
+
+    const leftChildren = [];
+    for (const elem of leftElements) {
+      if (elem.type === 'cluster') {
+        leftChildren.push(...buildParagraphsFromLineClusters([elem.cluster], AlignmentType.LEFT, viewport.width));
+      } else if (elem.type === 'image') {
+        leftChildren.push(
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [
+              new ImageRun({
+                data: elem.image.buffer,
+                transformation: { width: elem.image.widthPt, height: elem.image.heightPt },
+              }),
+            ],
+            spacing: { before: 100, after: 100 },
+          })
+        );
+      }
+    }
+
+    const rightElements = [
+      ...rightColClusters.map((c) => ({ type: 'cluster', yPt: c.avgY, cluster: c })),
+      ...rightColImages.map((i) => ({ type: 'image', yPt: i.yPt, image: i })),
+    ].sort((a, b) => a.yPt - b.yPt);
+
+    const rightChildren = [];
+    for (const elem of rightElements) {
+      if (elem.type === 'cluster') {
+        rightChildren.push(...buildParagraphsFromLineClusters([elem.cluster], AlignmentType.LEFT, viewport.width));
+      } else if (elem.type === 'image') {
+        rightChildren.push(
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [
+              new ImageRun({
+                data: elem.image.buffer,
+                transformation: { width: elem.image.widthPt, height: elem.image.heightPt },
+              }),
+            ],
+            spacing: { before: 100, after: 100 },
+          })
+        );
+      }
+    }
+
+    const borderlessCell = {
+      top: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      bottom: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      left: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+      right: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+    };
+
+    const table = new Table({
+      width: { size: 9360, type: WidthType.DXA },
+      columnWidths: [4450, 460, 4450],
+      borders: borderlessCell,
+      rows: [
+        new TableRow({
+          children: [
+            new TableCell({
+              width: { size: 4450, type: WidthType.DXA },
+              borders: borderlessCell,
+              children: leftChildren.length > 0 ? leftChildren : [new Paragraph({ children: [] })],
+            }),
+            new TableCell({
+              width: { size: 460, type: WidthType.DXA },
+              borders: borderlessCell,
+              children: [new Paragraph({ children: [] })],
+            }),
+            new TableCell({
+              width: { size: 4450, type: WidthType.DXA },
+              borders: borderlessCell,
+              children: rightChildren.length > 0 ? rightChildren : [new Paragraph({ children: [] })],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const pageStream = [
+      { type: 'table', yPt: 100, table },
+      ...bannerImages.map((img) => ({ type: 'banner_image', yPt: img.yPt, image: img })),
+    ].sort((a, b) => a.yPt - b.yPt);
+
+    for (const item of pageStream) {
+      if (item.type === 'table') {
+        docxChildren.push(item.table);
+      } else if (item.type === 'banner_image') {
+        docxChildren.push(
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [
+              new ImageRun({
+                data: item.image.buffer,
+                transformation: { width: item.image.widthPt, height: item.image.heightPt },
+              }),
+            ],
+            spacing: { before: 120, after: 120 },
+          })
+        );
+      }
+    }
+  } else {
+    // Single Column Body Section Across 100% Page Width (No Squeezing!)
+    const singleElements = [
+      ...bodyClusters.map((c) => ({ type: 'cluster', yPt: c.avgY, cluster: c })),
+      ...pageImages.map((i) => ({ type: 'image', yPt: i.yPt, image: i })),
+    ].sort((a, b) => a.yPt - b.yPt);
+
+    for (const elem of singleElements) {
+      if (elem.type === 'cluster') {
+        docxChildren.push(...buildParagraphsFromLineClusters([elem.cluster], null, viewport.width));
+      } else if (elem.type === 'image') {
+        docxChildren.push(
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [
+              new ImageRun({
+                data: elem.image.buffer,
+                transformation: { width: elem.image.widthPt, height: elem.image.heightPt },
+              }),
+            ],
+            spacing: { before: 120, after: 120 },
+          })
+        );
+      }
+    }
+  }
+
+  return docxChildren;
+}
+
+/**
  * Creates a Microsoft Word (.docx) file from PDF.
  * @param {string} pdfPath - Path to input PDF file.
- * @param {'exact'|'editable'} [mode='exact'] - Conversion mode ('exact' for 1:1 replica, 'editable' for flow text).
+ * @param {'exact'|'editable'} [mode='editable'] - Conversion mode ('exact' for 1:1 replica, 'editable' for flow text).
  */
-export const createDocxFromPdf = async (pdfPath, mode = 'exact') => {
+export const createDocxFromPdf = async (pdfPath, mode = 'editable') => {
   if (mode === 'exact') {
     return await createDocxExactReplica(pdfPath);
   }
@@ -503,6 +802,7 @@ export const createDocxFromPdf = async (pdfPath, mode = 'exact') => {
   const pdfDoc = await loadingTask.promise;
   const numPages = pdfDoc.numPages;
   const sections = [];
+  let totalExtractedChars = 0;
 
   for (let pageNum = 1; pageNum <= numPages; pageNum++) {
     const page = await pdfDoc.getPage(pageNum);
@@ -510,152 +810,11 @@ export const createDocxFromPdf = async (pdfPath, mode = 'exact') => {
 
     const textContent = await page.getTextContent({ includeMarkedContent: true });
     const textItems = parseTextItems(textContent, viewport);
+    totalExtractedChars += textItems.reduce((sum, item) => sum + (item.str ? item.str.replace(/[^a-zA-Z0-9]/g, '').length : 0), 0);
     const pageImages = await extractPageImages(page, viewport);
 
     const lineClusters = clusterTextItemsIntoLines(textItems);
-
-    // UNIFIED ELEMENT STREAM: Combine line clusters and images into a single array sorted strictly by Y position
-    const pageElements = [];
-
-    for (const cluster of lineClusters) {
-      pageElements.push({
-        type: 'text_cluster',
-        yPt: cluster.avgY,
-        cluster: cluster,
-      });
-    }
-
-    for (const img of pageImages) {
-      pageElements.push({
-        type: 'image',
-        yPt: img.yPt,
-        image: img,
-      });
-    }
-
-    // Sort all page elements strictly top-to-bottom by Y coordinate
-    pageElements.sort((a, b) => a.yPt - b.yPt);
-
-    const docxChildren = [];
-
-    if (pageElements.length === 0) {
-      docxChildren.push(
-        new Paragraph({
-          children: [
-            new TextRun({
-              text: `[Page ${pageNum}]`,
-              font: 'Calibri',
-              size: 24,
-              italic: true,
-              color: '6B7280',
-            }),
-          ],
-        })
-      );
-    } else {
-      const pageMidX = viewport.width / 2;
-      let pendingTextClusters = [];
-
-      const flushPendingClusters = () => {
-        if (pendingTextClusters.length === 0) return;
-
-        // Check if pending text clusters represent a 2-column layout
-        if (isMultiColumnSection(pendingTextClusters, pageMidX)) {
-          const leftCol = [];
-          const rightCol = [];
-
-          for (const cluster of pendingTextClusters) {
-            const minX = Math.min(...cluster.items.map((it) => it.xPt));
-            const maxX = Math.max(...cluster.items.map((it) => it.xPt + it.widthPt));
-
-            if (minX < pageMidX - 20 && maxX > pageMidX + 20) {
-              const leftItems = cluster.items.filter((it) => it.xPt < pageMidX);
-              const rightItems = cluster.items.filter((it) => it.xPt >= pageMidX);
-              if (leftItems.length > 0) leftCol.push({ avgY: cluster.avgY, items: leftItems });
-              if (rightItems.length > 0) rightCol.push({ avgY: cluster.avgY, items: rightItems });
-            } else if (maxX <= pageMidX + 30) {
-              leftCol.push(cluster);
-            } else {
-              rightCol.push(cluster);
-            }
-          }
-
-          const leftParas = buildParagraphsFromLineClusters(leftCol);
-          const rightParas = buildParagraphsFromLineClusters(rightCol);
-
-          const borderlessCell = {
-            top: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
-            bottom: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
-            left: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
-            right: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
-          };
-
-          const table = new Table({
-            width: { size: 9360, type: WidthType.DXA },
-            columnWidths: [4450, 460, 4450],
-            borders: borderlessCell,
-            rows: [
-              new TableRow({
-                children: [
-                  new TableCell({
-                    width: { size: 4450, type: WidthType.DXA },
-                    borders: borderlessCell,
-                    children: leftParas.length > 0 ? leftParas : [new Paragraph({ children: [] })],
-                  }),
-                  new TableCell({
-                    width: { size: 460, type: WidthType.DXA },
-                    borders: borderlessCell,
-                    children: [new Paragraph({ children: [] })],
-                  }),
-                  new TableCell({
-                    width: { size: 4450, type: WidthType.DXA },
-                    borders: borderlessCell,
-                    children: rightParas.length > 0 ? rightParas : [new Paragraph({ children: [] })],
-                  }),
-                ],
-              }),
-            ],
-          });
-
-          docxChildren.push(table);
-        } else {
-          // Standard single-column paragraph rendering
-          docxChildren.push(...buildParagraphsFromLineClusters(pendingTextClusters));
-        }
-
-        pendingTextClusters = [];
-      };
-
-      // Process unified page elements stream in EXACT spatial sequence
-      for (const elem of pageElements) {
-        if (elem.type === 'text_cluster') {
-          pendingTextClusters.push(elem.cluster);
-        } else if (elem.type === 'image') {
-          // Flush any preceding text clusters before inserting image at its exact position
-          flushPendingClusters();
-
-          const img = elem.image;
-          docxChildren.push(
-            new Paragraph({
-              alignment: AlignmentType.CENTER,
-              children: [
-                new ImageRun({
-                  data: img.buffer,
-                  transformation: {
-                    width: img.widthPt,
-                    height: img.heightPt,
-                  },
-                }),
-              ],
-              spacing: { before: 120, after: 120 },
-            })
-          );
-        }
-      }
-
-      // Flush remaining text clusters at bottom of page
-      flushPendingClusters();
-    }
+    const docxChildren = renderPageContentToDocx(lineClusters, pageImages, viewport);
 
     sections.push({
       properties: {
@@ -670,6 +829,12 @@ export const createDocxFromPdf = async (pdfPath, mode = 'exact') => {
       },
       children: docxChildren,
     });
+  }
+
+  if (totalExtractedChars < 15) {
+    const err = new Error('PDF contains little or no extractable text layer.');
+    err.isScannedPdf = true;
+    throw err;
   }
 
   const doc = new Document({ sections });

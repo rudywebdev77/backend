@@ -30,7 +30,7 @@ export const convertPdfToWord = async (req, res, next) => {
       });
     }
 
-    const mode = req.query.mode || req.body.mode || 'exact';
+    const mode = req.query.mode || req.body.mode || 'editable';
     let docxBuffer = null;
     let conversionMethod = mode === 'exact' ? '1-to-1-exact-replica' : 'high-fidelity-layout';
 
