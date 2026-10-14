@@ -1,6 +1,3 @@
-/**
- * Global Error Handler Middleware
- */
 export const errorHandler = (err, req, res, next) => {
   console.error('Unhandled Server Error:', err);
 
