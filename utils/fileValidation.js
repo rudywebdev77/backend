@@ -1,28 +1,22 @@
-import { fileTypeFromFile } from 'file-type';
 import fs from 'fs';
 
 /**
- * Validates whether the given file is genuinely a PDF file using magic bytes.
- * @param {string} filePath 
+ * Checks that the file starts with the PDF magic bytes (%PDF-).
+ * @param {string} filePath
  * @returns {Promise<boolean>}
  */
 export const isPdfFile = async (filePath) => {
+  let fd;
   try {
-    const fileType = await fileTypeFromFile(filePath);
-    if (fileType && fileType.mime === 'application/pdf') {
-      return true;
-    }
-
-    // Fallback magic byte check for standard PDF header %PDF-
-    const fd = await fs.promises.open(filePath, 'r');
-    const buffer = Buffer.alloc(5);
-    await fd.read(buffer, 0, 5, 0);
-    await fd.close();
-
-    const header = buffer.toString('utf-8');
-    return header.startsWith('%PDF-');
+    fd = await fs.promises.open(filePath, 'r');
+    const buffer = Buffer.alloc(1024);
+    const { bytesRead } = await fd.read(buffer, 0, 1024, 0);
+    // The PDF header may be preceded by a few junk bytes, so search the first 1024 bytes
+    return buffer.subarray(0, bytesRead).includes('%PDF-');
   } catch (error) {
-    console.error('PDF header validation error:', error);
+    console.error('PDF header validation error:', error.message);
     return false;
+  } finally {
+    if (fd) await fd.close();
   }
 };
